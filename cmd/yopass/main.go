@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/jhaals/yopass/pkg/yopass"
@@ -22,6 +23,9 @@ Settings are read from flags, environment variables, or a config file located at
 variables have to be prefixed with YOPASS_ and dashes become underscores.
 
 Examples:
+      # Open $EDITOR to encrypt and share data written. Will fallback to vi if unset.
+      yopass
+
       # Encrypt and share secret from stdin
       printf 'secret message' | yopass
 
@@ -76,11 +80,20 @@ func main() {
 		os.Exit(code)
 	}
 
-	var err error
+	info, err := os.Stdin.Stat()
+	if err != nil {
+		fmt.Println("Failed to get file info:", err)
+		os.Exit(1)
+	}
+
 	if viper.IsSet("decrypt") {
 		err = decrypt(os.Stdout)
+	} else if viper.IsSet("file") {
+		err = encryptFileByName(viper.GetString("file"), os.Stdout)
+	} else if info.Mode()&os.ModeCharDevice != 0 {
+		err = encryptEditor()
 	} else {
-		err = encryptStdinOrFile(os.Stdin, os.Stdout)
+		err = encrypt(os.Stdin, os.Stdout)
 	}
 
 	if err != nil {
@@ -123,11 +136,45 @@ func decrypt(out io.Writer) error {
 	return err
 }
 
-func encryptStdinOrFile(in *os.File, out io.Writer) error {
-	if viper.IsSet("file") {
-		return encryptFileByName(viper.GetString("file"), out)
+func encryptEditor() error {
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err != nil {
+		return fmt.Errorf("Failed to open /dev/tty: %v", err)
 	}
-	return encryptStdin(in, out)
+
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = "vi"
+	}
+
+	tmpFile, err := os.CreateTemp("", "yopasstmp*.txt")
+	if err != nil {
+		return fmt.Errorf("Failed to create temporary file: %w", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	cmd := exec.Command(editor, tmpFile.Name())
+	cmd.Stdin = tty
+	cmd.Stdout = tty
+	cmd.Stderr = tty
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("Failed running editor: %w", err)
+	}
+
+	content, err := os.ReadFile(tmpFile.Name())
+	if err != nil {
+		return fmt.Errorf("Failed reading temporary file: %w", err)
+	}
+
+	// Exit without error if content is empty
+	if string(content) == "" {
+		return nil
+	}
+
+	stringReader := strings.NewReader(string(content))
+	stringReadCloser := io.NopCloser(stringReader)
+	return encrypt(stringReadCloser, os.Stdout)
 }
 
 func encryptFileByName(filename string, out io.Writer) error {
@@ -140,13 +187,6 @@ func encryptFileByName(filename string, out io.Writer) error {
 }
 
 func encryptStdin(in *os.File, out io.Writer) error {
-	var info, err = in.Stat()
-	if err != nil {
-		return fmt.Errorf("Failed to get file info: %w", err)
-	}
-	if info.Mode()&os.ModeCharDevice != 0 {
-		return fmt.Errorf("No filename or piped input to encrypt given")
-	}
 	return encrypt(in, out)
 }
 
