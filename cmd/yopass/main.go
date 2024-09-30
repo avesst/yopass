@@ -153,7 +153,9 @@ func encryptEditor() error {
 	}
 	defer os.Remove(tmpFile.Name())
 
-	cmd := exec.Command(editor, tmpFile.Name())
+	editorCmd := strings.Split(editor, " ")
+	editorCmd = append(editorCmd, tmpFile.Name())
+	cmd := exec.Command(editorCmd[0], editorCmd[1:]...)
 	cmd.Stdin = tty
 	cmd.Stdout = tty
 	cmd.Stderr = tty
